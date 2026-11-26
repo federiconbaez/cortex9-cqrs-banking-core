@@ -1,4 +1,4 @@
-package io.github.federiconbaez.banking.adapter.inmemory;
+package io.github.federiconbaez.banking.adapter.contract;
 
 import static io.github.federiconbaez.banking.support.Fixtures.T0;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -13,6 +13,7 @@ import io.github.federiconbaez.banking.domain.AccountEvent;
 import io.github.federiconbaez.banking.domain.AccountId;
 import io.github.federiconbaez.banking.domain.Currency;
 import io.github.federiconbaez.banking.domain.Money;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -23,11 +24,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /** Suite de contrato reutilizable: todo adapter de EventStore debe pasarla. */
-abstract class EventStoreContract {
+public abstract class EventStoreContract {
 
   protected abstract EventStore newStore();
 
-  static final CommandId CMD = new CommandId("c");
+  protected static final CommandId CMD = new CommandId("c");
   EventStore store;
 
   @BeforeEach
@@ -71,6 +72,42 @@ abstract class EventStoreContract {
     assertThat(store.load("s")).hasSize(1);
     assertThat(store.load("new")).isEmpty();
     assertThat(store.readAll(0, 10)).hasSize(1);
+  }
+
+  @Test
+  void conflictsDoNotConsumeGlobalPositions() {
+    store.append("s", 0, CMD, List.of(ev("e1", 1)));
+    store.append("s", 0, CMD, List.of(ev("lost", 1)));
+    AppendResult r = store.append("t", 0, CMD, List.of(ev("e2", 1), ev("e3", 1)));
+    assertThat(((AppendResult.Appended) r).events())
+        .extracting(StoredEvent::globalPosition)
+        .containsExactly(2L, 3L);
+    assertThat(store.readAll(0, 10))
+        .extracting(StoredEvent::eventId)
+        .containsExactly("e1", "e2", "e3");
+  }
+
+  @Test
+  void everyEventTypeIsStoredAndLoadedUnchanged() {
+    AccountId id = new AccountId("acc-ñ");
+    Instant at = T0.plusNanos(123_456_789);
+    List<AccountEvent> events =
+        List.of(
+            new AccountEvent.AccountOpened(id, "Dueña \"Ñandú\"", Currency.USD, 5_000, at),
+            new AccountEvent.MoneyDeposited(
+                id, Money.of(Long.MAX_VALUE, Currency.USD), "ref-1", at),
+            new AccountEvent.MoneyWithdrawn(id, Money.of(1, Currency.USD), "", at),
+            new AccountEvent.AccountFrozen(id, "fraude?", at),
+            new AccountEvent.AccountUnfrozen(id, at),
+            new AccountEvent.AccountClosed(id, at.plusSeconds(1)));
+    List<NewEvent> batch = new ArrayList<>();
+    for (int i = 0; i < events.size(); i++) {
+      batch.add(new NewEvent("e" + i, events.get(i)));
+    }
+    store.append("all", 0, new CommandId("cmd-all"), batch);
+    assertThat(store.load("all")).extracting(StoredEvent::event).containsExactlyElementsOf(events);
+    assertThat(store.readAll(0, 10))
+        .allMatch(e -> e.causationId().equals(new CommandId("cmd-all")));
   }
 
   @Test
