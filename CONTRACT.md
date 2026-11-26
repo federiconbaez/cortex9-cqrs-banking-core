@@ -12,10 +12,13 @@ Núcleo bancario CQRS + Event Sourcing en Java 21, arquitectura hexagonal, sin f
 - Saga orquestada de transferencia: débito → crédito → compensación si el crédito es rechazado.
 - Adapters en memoria: EventStore, store de idempotencia, read models, reloj fijo/sistema, ids
   secuenciales/UUID.
+- Adapter durable SQLite del `EventStore` (CX9-6205, ADR-0003). Todo adapter de `EventStore` debe
+  pasar `EventStoreContract`; hoy la corren memoria y SQLite.
 
 ## Fuera de alcance (non-goals)
 
-- Persistencia durable, red, HTTP, mensajería, autenticación, multi-tenant.
+- Persistencia durable del store de idempotencia y de los read models. Base servidor
+  (Postgres), varios hosts. Red, HTTP, mensajería, autenticación, multi-tenant.
 - Conversión de monedas, intereses, comisiones, límites diarios.
 - Snapshots de agregados, upcasting/versionado de eventos.
 - Atomicidad entre el append y el store de idempotencia en un backend real (ver ADR-0002).
@@ -30,6 +33,8 @@ Núcleo bancario CQRS + Event Sourcing en Java 21, arquitectura hexagonal, sin f
 5. `FROZEN` admite créditos y rechaza débitos. `CLOSED` es terminal. Cerrar exige saldo exacto 0.
 6. Replay determinista: `rehydrate(history)` produce el mismo estado que la ejecución en vivo.
 7. Versión del stream = cantidad de eventos; el append falla si la versión esperada no coincide.
+   En SQLite lo respalda además `UNIQUE(stream_id, version)`. Las posiciones globales son
+   crecientes y un conflicto no consume posiciones.
 8. Mismo `CommandId` + mismo payload ⇒ mismo `CommandResult` y ningún evento nuevo.
 9. Una transferencia terminada (`Completed`, `DebitRejected`, `Compensated`) conserva la suma total
    de saldos.
@@ -54,7 +59,7 @@ Violaciones de precondición de value objects (id vacío, moneda nula, mezclar m
 | Puerto | Tipo | Responsabilidad |
 |---|---|---|
 | `CommandGateway` | entrada | despachar comandos |
-| `EventStore` | salida | `load`, `append` con expected version, `readAll` paginado |
+| `EventStore` | salida | `load`, `append` con expected version, `readAll` paginado (memoria y SQLite) |
 | `IdempotencyStore` | salida | `find`/`save` first-writer-wins |
 | `Clock` | salida | tiempo inyectado |
 | `IdGenerator` | salida | ids de evento |
@@ -71,7 +76,8 @@ Aggregate (`AggregateRoot`, `Account`), Command (`Command`), Event (`AccountEven
 - [x] Tests JUnit 5 con fakes escritos a mano (sin Mockito).
 - [x] Propiedades jqwik: saldo respeta política, replay determinista, transferencias conservan el
       total, comando idempotente = mismo resultado.
-- [x] Suite de contrato de `EventStore` reutilizable.
+- [x] Suite de contrato de `EventStore` corrida contra memoria y SQLite; propiedad diferencial.
+- [x] PIT sobre el adapter SQLite ≥ 80 % en CI.
 - [x] PIT sobre dominio con umbral declarado ≥ 80 %.
 - [x] JaCoCo: cobertura de ramas del dominio ≥ 95 % (falla el build si baja).
 - [x] Error Prone + NullAway en código de producción; Spotless (google-java-format).
